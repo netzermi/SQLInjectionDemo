@@ -1,4 +1,9 @@
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 
 /*
 Neue Datenbank mit dem Namen "SqlInjectionDemo"
@@ -21,26 +26,44 @@ INSERT INTO `users` (`username`, `password`, `created_at`) VALUES
 
  */
 
+interface OutputListener {
+    void onOutput(String message);
+}
+
+
 
 public class SqlInjectionDemo {
     private final String url;
     private final String user;
     private final String password;
     private final Connection connection;
+    private OutputListener outputListener;
 
     public SqlInjectionDemo() throws SQLException {
-        this.url = "jdbc:mysql://localhost:3306/jdbcdemo?allowMultiQueries=true";
-        this.user = "user";
-        this.password = "12345";
+        this.url = "jdbc:h2:mem:SqlInjectionDemo;DB_CLOSE_DELAY=-1;ALLOW_LITERALS=ALL";
+        this.user = "sa";
+        this.password = "";
         this.connection = DriverManager.getConnection(url, user, password);
     }
 
+    public void setOutputListener(OutputListener listener) {
+        this.outputListener = listener;
+    }
+
+    private void print(String message) {
+        if (outputListener != null) {
+            outputListener.onOutput(message);
+        } else {
+            System.out.println(message);
+        }
+    }
+
     public void createTable() throws SQLException {
-        String sql = "CREATE TABLE `users` (\n" +
-                "  `id` int NOT NULL AUTO_INCREMENT PRIMARY KEY,\n" +
-                "  `username` varchar(255) NOT NULL,\n" +
-                "  `password` varchar(255) NOT NULL,\n" +
-                "  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP\n" +
+        String sql = "CREATE TABLE users (\n" +
+                "  id INT AUTO_INCREMENT PRIMARY KEY,\n" +
+                "  username VARCHAR(255) NOT NULL,\n" +
+                "  password VARCHAR(255) NOT NULL,\n" +
+                "  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP\n" +
                 ");";
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             stmt.executeUpdate();
@@ -48,15 +71,15 @@ public class SqlInjectionDemo {
     }
 
     public void addDummyData() throws SQLException {
-        String sql = "INSERT INTO `users` (`username`, `password`, `created_at`)\n" +
+        String sql = "INSERT INTO users (username, password, created_at)\n" +
                 "VALUES \n" +
-                " ('alice', SHA2('alicePass123', 256), '2025-01-01 10:00:00'),\n" +
-                "('bob',   SHA2('B0b!Secure',     256), '2025-02-15 12:30:00'),\n" +
-                "('carla', SHA2('c4rl4_pw',       256), '2025-03-20 09:15:00'),\n" +
-                "('admin', SHA2('admin',      256), '2025-04-01 00:00:00');";
+                " ('alice', HASH('SHA256', STRINGTOUTF8('alicePass123'), 1), '2025-01-01 10:00:00'),\n" +
+                "('bob',   HASH('SHA256', STRINGTOUTF8('B0b!Secure'), 1), '2025-02-15 12:30:00'),\n" +
+                "('carla', HASH('SHA256', STRINGTOUTF8('c4rl4_pw'), 1), '2025-03-20 09:15:00'),\n" +
+                "('admin', HASH('SHA256', STRINGTOUTF8('admin'), 1), '2025-04-01 00:00:00');";
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             int rowsAdded = stmt.executeUpdate();
-            System.out.println("Rows added: " + rowsAdded);
+            print("Rows added: " + rowsAdded);
         }
     }
 
@@ -65,7 +88,7 @@ public class SqlInjectionDemo {
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             ResultSet rs = stmt.executeQuery();
             while (rs.next()) {
-                System.out.println("User: " + rs.getString("username") + ", " + rs.getString("password"));
+                print("User: " + rs.getString("username") + ", " + rs.getString("password"));
             }
         }
     }
@@ -82,7 +105,7 @@ public class SqlInjectionDemo {
             stmt.setString(1, userInput);
             ResultSet rs = stmt.executeQuery();
             while (rs.next()) {
-                System.out.println("User: " + rs.getString("username"));
+                print("User: " + rs.getString("username"));
             }
         }
     }
@@ -94,11 +117,11 @@ public class SqlInjectionDemo {
      */
     public void getUserByUsernameUnsafe(String userInput) throws SQLException {
         String sql = "SELECT * FROM users WHERE username = '" + userInput + "'"; // die einfachen Hochkommata führen am Ende zu einem SQL-Syntax-Fehler
-        System.out.println(">>> Auszuführendes unsicheres Statement: \"" + sql + "\"");
+        print(">>> Auszuführendes unsicheres Statement: \"" + sql + "\"");
         try (Statement stmt = connection.createStatement()) {
             ResultSet rs = stmt.executeQuery(sql);
             while (rs.next()) {
-                System.out.println("User: " + rs.getString("username"));
+                print("User: " + rs.getString("username"));
             }
         }
     }
@@ -111,15 +134,15 @@ public class SqlInjectionDemo {
      * @throws SQLException
      */
     public void vulnerableLogin(String username, String password) throws SQLException {
-        String sql = "SELECT * FROM `users` WHERE `username` = '" + username + "' AND `password` = SHA2('" + password + "', 256)";
-        System.out.println("Ausgeführte SQL: " + sql);
+        String sql = "SELECT * FROM users WHERE username = '" + username + "' AND password = HASH('SHA256', STRINGTOUTF8('" + password + "'), 1)";
+        print("Ausgeführte SQL: " + sql);
         try (Statement stmt = connection.createStatement();
              ResultSet rs = stmt.executeQuery(sql)) {
 
             if (rs.next()) {
-                System.out.println("Login erfolgreich mit username: " + username);
+                print("Login erfolgreich mit username: " + username);
             } else {
-                System.out.println("Login fehlgeschlagen");
+                print("Login fehlgeschlagen");
             }
         }
     }
@@ -132,16 +155,16 @@ public class SqlInjectionDemo {
      * @throws SQLException
      */
     public void safeLogin(String username, String password) throws SQLException  {
-        String sql = "SELECT * FROM `users` WHERE `username` = ? AND `password` = SHA2(?, 256)";
+        String sql = "SELECT * FROM users WHERE username = ? AND password = HASH('SHA256', STRINGTOUTF8(?), 1)";
         try (PreparedStatement ps = connection.prepareStatement(sql)) {
             ps.setString(1, username);
             ps.setString(2, password);
-            System.out.println("PreparedStatement wird ausgeführt (Parameter gebunden).");
+            print("PreparedStatement wird ausgeführt (Parameter gebunden).");
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
-                    System.out.println("Login erfolgreich mit username: " + username);
+                    print("Login erfolgreich mit username: " + username);
                 } else {
-                    System.out.println("Login fehlgeschlagen");
+                    print("Login fehlgeschlagen");
                 }
             }
         }
